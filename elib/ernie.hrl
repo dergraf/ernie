@@ -10,7 +10,9 @@
                   log = undefined,      % log information
                   infos = [],           % list of info binaries
                   action = undefined,   % action binary
-                  priority = high}).    % priority [ high | low ]
+                  priority = high,      % priority [ high | low ]
+                  con_pid = undefined   % connection pid
+              }).
 
 -record(log, {taccept = erlang:now(),   % time that connection was accepted
               tprocess = erlang:now(),  % time that processing started

@@ -171,29 +171,42 @@ loop(LSock) ->
 % Receive and process
 
 receive_term(Request, State) ->
+  receive_term(Request, State, infinity).
+
+receive_term(Request, State, RecvTimeout) ->
   Sock = Request#request.sock,
-  case gen_tcp:recv(Sock, 0) of
+  case gen_tcp:recv(Sock, 0, RecvTimeout) of
     {ok, BinaryTerm} ->
       logger:debug("Got binary term: ~p~n", [BinaryTerm]),
       Term = binary_to_term(BinaryTerm),
       logger:info("Got term: ~p~n", [Term]),
       case Term of
         {call, '__admin__', Fun, Args} ->
-          ernie_admin:process(Sock, Fun, Args, State);
+          ernie_admin:process(Sock, Fun, Args, State); %% will close socket
         {info, Command, Args} ->
           Infos = Request#request.infos,
           Infos2 = [BinaryTerm | Infos],
-          Request2 = Request#request{infos = Infos2},
+          Request2 = Request#request{infos = Infos2, con_pid = self()},
           Request3 = process_info(Request2, Command, Args),
           receive_term(Request3, State);
         _Any ->
-          Request2 = Request#request{action = BinaryTerm},
-          close_if_cast(Term, Request2),
+          Request2 = Request#request{action = BinaryTerm, con_pid = self()},
+          done_if_cast(Term, Request2),
           ernie_server:enqueue_request(Request2),
-          ernie_server:kick()
+          ernie_server:kick(),
+          receive
+            done ->
+                receive_term(Request, State, 10000); %% timeout within 10s
+            _ ->
+                ok
+          end
       end;
+    {error, timeout} ->
+      ok = gen_tcp:close(Sock),
+      logger:debug("Socket closed by timeout: ~p~n", [Sock]);      
     {error, closed} ->
-      ok = gen_tcp:close(Sock)
+      ok = gen_tcp:close(Sock),
+      logger:debug("Socket closed by caller: ~p~n", [Sock])      
   end.
 
 process_info(Request, priority, [Priority]) ->
@@ -216,7 +229,7 @@ no_module(Mod, Request, Priority, Q2, State) ->
   Class = <<"ServerError">>,
   Message = list_to_binary(io_lib:format("No such module '~p'", [Mod])),
   gen_tcp:send(Sock, term_to_binary({error, [server, 0, Class, Message, []]})),
-  ok = gen_tcp:close(Sock),
+  Request#request.con_pid ! done,
   finish(Priority, Q2, State).
 
 process_module(ActionTerm, [], Request, Priority, Q2, State) ->
@@ -226,7 +239,7 @@ process_module(ActionTerm, [], Request, Priority, Q2, State) ->
   Class = <<"ServerError">>,
   Message = list_to_binary(io_lib:format("No such function '~p:~p'", [Mod, Fun])),
   gen_tcp:send(Sock, term_to_binary({error, [server, 0, Class, Message, []]})),
-  ok = gen_tcp:close(Sock),
+  Request#request.con_pid ! done,
   finish(Priority, Q2, State);
 process_module(ActionTerm, Specs, Request, Priority, Q2, State) ->
   [{_Mod, Id} | OtherSpecs] = Specs,
@@ -261,13 +274,12 @@ process_module(ActionTerm, Specs, Request, Priority, Q2, State) ->
       process_external_request(ValidPid, Request, Priority, Q2, State)
   end.
 
-close_if_cast(ActionTerm, Request) ->
+done_if_cast(ActionTerm, Request) ->
   case ActionTerm of
     {cast, _Mod, _Fun, _Args} ->
       Sock = Request#request.sock,
       gen_tcp:send(Sock, term_to_binary({noreply})),
-      ok = gen_tcp:close(Sock),
-      logger:debug("Closed cast.~n", []);
+      Request#request.con_pid ! done;
     _Any ->
       ok
   end.
@@ -328,8 +340,7 @@ process_now(Pid, Request, Asset) ->
     ernie_server:fin(),
     ernie_server:kick(),
     logger:debug("Returned asset ~p~n", [Asset]),
-    gen_tcp:close(Request#request.sock),
-    logger:debug("Closed socket ~p~n", [Request#request.sock])
+    Request#request.con_pid ! done
   end.
 
 unsafe_process_now(Request, Asset) ->

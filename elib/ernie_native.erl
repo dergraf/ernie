@@ -19,7 +19,7 @@ process(ActionTerm, Request) ->
       Data = term_to_binary({error, [user, 0, <<"RuntimeError">>, BError, BTrace]}),
       gen_tcp:send(Sock, Data)
   end,
-  ok = gen_tcp:close(Sock),
+  Request#request.con_pid ! done,
   ernie_server:fin(),
   Log = Request#request.log,
   Log2 = Log#log{tdone = erlang:now()},
