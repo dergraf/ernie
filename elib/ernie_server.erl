@@ -196,7 +196,7 @@ receive_term(Request, State, RecvTimeout) ->
           ernie_server:kick(),
           receive
             done ->
-                receive_term(Request, State, 10000); %% timeout within 10s
+                receive_term(Request, State, RecvTimeout); %% infinity is probably not the best value
             _ ->
                 ok
           end
